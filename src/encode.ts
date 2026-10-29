@@ -17,7 +17,6 @@ import type {
   DataViewNode,
   DateNode,
   EncodedNode,
-  EncodedProperty,
   EncodedValue,
   Envelope,
   JSONPlusOptions,
@@ -51,6 +50,24 @@ interface EncodeContext {
   nodes: NodeSlot[];
   edges: number;
   binaryBytes: number;
+}
+
+const MAP_SIZE_GETTER = Object.getOwnPropertyDescriptor(Map.prototype, "size")?.get;
+const SET_SIZE_GETTER = Object.getOwnPropertyDescriptor(Set.prototype, "size")?.get;
+
+function readCollectionSize(
+  value: object,
+  getter: (() => number) | undefined,
+  name: string,
+): number {
+  try {
+    if (getter === undefined) throw new TypeError("Native size getter is unavailable.");
+    return getter.call(value);
+  } catch (cause) {
+    throw new JSONPlusError("UNSUPPORTED_TYPE", `The ${name} object could not be inspected.`, {
+      cause,
+    });
+  }
 }
 
 function failUnsupportedProperty(message: string): never {
@@ -110,15 +127,9 @@ function encodeValue(value: unknown, context: EncodeContext): EncodedValue {
       return { $type: "bigint", value: bigint };
     }
     case "symbol":
-      throw new JSONPlusError(
-        "UNSUPPORTED_TYPE",
-        "Symbol values are unsupported in JSON+ version 1.",
-      );
+      throw new JSONPlusError("UNSUPPORTED_TYPE", "Symbol values are unsupported in JSON+.");
     case "function":
-      throw new JSONPlusError(
-        "UNSUPPORTED_TYPE",
-        "Function values are unsupported in JSON+ version 1.",
-      );
+      throw new JSONPlusError("UNSUPPORTED_TYPE", "Function values are unsupported in JSON+.");
     case "object":
       return encodeReference(value, context);
     default:
@@ -168,7 +179,7 @@ function encodeProperties(
   value: object,
   context: EncodeContext,
   skipKey?: (key: string) => boolean,
-): EncodedProperty[] {
+): EncodedValue[] {
   let keys: (string | symbol)[];
   try {
     keys = Reflect.ownKeys(value);
@@ -178,14 +189,13 @@ function encodeProperties(
     });
   }
 
-  const properties: EncodedProperty[] = [];
+  const properties: EncodedValue[] = new Array(keys.length * 2);
+  let writeIndex = 0;
   for (const key of keys) {
     if (typeof key === "symbol") {
       const descriptor = propertyDescriptor(value, key);
       if (descriptor.enumerable) {
-        failUnsupportedProperty(
-          "Enumerable symbol-keyed properties are unsupported in JSON+ version 1.",
-        );
+        failUnsupportedProperty("Enumerable symbol-keyed properties are unsupported in JSON+.");
       }
       continue;
     }
@@ -200,10 +210,13 @@ function encodeProperties(
     }
 
     checkString(key, context.limits, "Property key");
-    properties.push([key, encodeEdge(descriptor.value, context)]);
-    checkCollectionLength(properties.length, context.limits, "Object properties");
+    properties[writeIndex] = key;
+    properties[writeIndex + 1] = encodeEdge(descriptor.value, context);
+    writeIndex += 2;
+    checkCollectionLength(writeIndex / 2, context.limits, "Object properties");
   }
 
+  properties.length = writeIndex;
   return properties;
 }
 
@@ -224,7 +237,8 @@ function encodeArray(value: unknown[], context: EncodeContext): ArrayNode {
     });
   }
 
-  const entries: ArrayNode["entries"] = [];
+  const entries: ArrayNode["entries"] = new Array(Math.max(0, keys.length - 1) * 2);
+  let writeIndex = 0;
   for (const key of keys) {
     if (key === "length") continue;
     if (typeof key === "symbol") {
@@ -247,10 +261,13 @@ function encodeArray(value: unknown[], context: EncodeContext): ArrayNode {
       failUnsupportedProperty(`Array accessor at index ${index} is unsupported.`);
     }
 
-    entries.push([index, encodeEdge(descriptor.value, context)]);
-    checkCollectionLength(entries.length, context.limits, "Array entries");
+    entries[writeIndex] = index;
+    entries[writeIndex + 1] = encodeEdge(descriptor.value, context);
+    writeIndex += 2;
+    checkCollectionLength(writeIndex / 2, context.limits, "Array entries");
   }
 
+  entries.length = writeIndex;
   return { type: "array", length, entries };
 }
 
@@ -293,42 +310,54 @@ function encodeNode(pending: PendingNode, context: EncodeContext): EncodedNode {
       return node;
     }
     case "map": {
-      const entries: MapNode["entries"] = [];
-      let iterator: IterableIterator<[unknown, unknown]>;
+      const size = readCollectionSize(value, MAP_SIZE_GETTER, "Map");
+      checkCollectionLength(size, context.limits, "Map entries");
+      const entries: MapNode["entries"] = new Array(size * 2);
+      let writeIndex = 0;
       try {
-        iterator = Map.prototype.entries.call(value as Map<unknown, unknown>);
+        Map.prototype.forEach.call(
+          value as Map<unknown, unknown>,
+          (itemValue: unknown, key: unknown) => {
+            entries[writeIndex] = encodeEdge(key, context);
+            entries[writeIndex + 1] = encodeEdge(itemValue, context);
+            writeIndex += 2;
+            checkCollectionLength(writeIndex / 2, context.limits, "Map entries");
+          },
+        );
       } catch (cause) {
+        if (cause instanceof JSONPlusError) throw cause;
         throw new JSONPlusError("UNSUPPORTED_TYPE", "The Map object could not be inspected.", {
           cause,
         });
       }
-      for (const [key, itemValue] of iterator) {
-        entries.push([encodeEdge(key, context), encodeEdge(itemValue, context)]);
-        checkCollectionLength(entries.length, context.limits, "Map entries");
-      }
+      entries.length = writeIndex;
       return { type: "map", entries, properties: encodeProperties(value, context) };
     }
     case "set": {
-      const values: SetNode["values"] = [];
-      let iterator: IterableIterator<unknown>;
+      const size = readCollectionSize(value, SET_SIZE_GETTER, "Set");
+      checkCollectionLength(size, context.limits, "Set values");
+      const values: SetNode["values"] = new Array(size);
+      let writeIndex = 0;
       try {
-        iterator = Set.prototype.values.call(value as Set<unknown>);
+        Set.prototype.forEach.call(value as Set<unknown>, (itemValue: unknown) => {
+          values[writeIndex] = encodeEdge(itemValue, context);
+          writeIndex += 1;
+          checkCollectionLength(writeIndex, context.limits, "Set values");
+        });
       } catch (cause) {
+        if (cause instanceof JSONPlusError) throw cause;
         throw new JSONPlusError("UNSUPPORTED_TYPE", "The Set object could not be inspected.", {
           cause,
         });
       }
-      for (const itemValue of iterator) {
-        values.push(encodeEdge(itemValue, context));
-        checkCollectionLength(values.length, context.limits, "Set values");
-      }
+      values.length = writeIndex;
       return { type: "set", values, properties: encodeProperties(value, context) };
     }
     case "array-buffer": {
       if (isResizableArrayBuffer(value)) {
         throw new JSONPlusError(
           "UNSUPPORTED_TYPE",
-          "Resizable ArrayBuffers are unsupported in JSON+ version 1.",
+          "Resizable ArrayBuffers are unsupported in JSON+.",
         );
       }
       const byteLength = readArrayBufferByteLength(value);

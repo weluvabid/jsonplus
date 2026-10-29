@@ -180,10 +180,7 @@ export function classifyReference(value: object): {
   const sharedArrayBufferPrototype =
     typeof SharedArrayBuffer === "undefined" ? undefined : SharedArrayBuffer.prototype;
   if (sharedArrayBufferPrototype !== undefined && prototype === sharedArrayBufferPrototype) {
-    throw new JSONPlusError(
-      "UNSUPPORTED_TYPE",
-      "SharedArrayBuffer is unsupported in JSON+ version 1.",
-    );
+    throw new JSONPlusError("UNSUPPORTED_TYPE", "SharedArrayBuffer is unsupported in JSON+.");
   }
 
   throw new JSONPlusError(

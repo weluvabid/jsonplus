@@ -1,10 +1,10 @@
-# JSON+ Version 1 Specification
+# JSON+ Version 2 Specification
 
 ## 1. Goals and non-goals
 
 JSON+ serializes a bounded subset of JavaScript values while preserving graph topology: supported reference identities, edges, cycles, and shared references. It is a snapshot format, not a live connection to the source graph.
 
-The format does not encode functions, closures, runtime behavior, schemas, remote calls, or arbitrary JavaScript object instances. Version 1 does not support `SharedArrayBuffer`, resizable `ArrayBuffer`, weak collections, promises, DOM nodes, symbols, cross-realm objects, or arbitrary class instances.
+The format does not encode functions, closures, runtime behavior, schemas, remote calls, or arbitrary JavaScript object instances. Versions 1 and 2 do not support `SharedArrayBuffer`, resizable `ArrayBuffer`, weak collections, promises, DOM nodes, symbols, cross-realm objects, or arbitrary class instances.
 
 ## 2. Envelope
 
@@ -13,7 +13,7 @@ A document is a JSON object with exactly these fields:
 ```json
 {
   "format": "jsonplus",
-  "version": 1,
+  "version": 2,
   "root": { "$ref": 0 },
   "nodes": []
 }
@@ -21,7 +21,7 @@ A document is a JSON object with exactly these fields:
 
 `root` is an encoded value. `nodes` is an array of node records. Node identity is the zero-based index of a node in this array. All nodes must be reachable from `root`; unreachable records are invalid.
 
-The exact set of fields is version-specific. Version 1 rejects unknown envelope fields, node fields, node types, and value tags. A decoder must not reinterpret an unknown tag as an ordinary object.
+The exact set of fields is version-specific. Each version rejects unknown envelope fields, node fields, node types, and value tags. A decoder must not reinterpret an unknown tag as an ordinary object.
 
 ## 3. Encoded values
 
@@ -45,12 +45,12 @@ Raw JSON numbers must be finite and must not be negative zero. Special numeric v
 
 ## 4. Node schema
 
-All fields shown below are required; no additional fields are allowed in version 1. `properties` is an ordered array of `[string key, encoded value]` pairs. Property keys must be unique within a node.
+All fields shown below are required; no additional fields are allowed in version 2. `properties` is a flat ordered array alternating string keys and encoded values. Property keys must be unique within a node. Version 1 used nested key/value pairs and remains decode-compatible.
 
 ### Object
 
 ```json
-{ "type": "object", "prototype": "object", "properties": [] }
+{ "type": "object", "prototype": "object", "properties": ["name", "example"] }
 ```
 
 `prototype` is `object` for an ordinary object whose prototype is `Object.prototype`, or `null` for a null-prototype object.
@@ -58,10 +58,10 @@ All fields shown below are required; no additional fields are allowed in version
 ### Array
 
 ```json
-{ "type": "array", "length": 3, "entries": [[1, { "$type": "undefined" }]] }
+{ "type": "array", "length": 3, "entries": [1, { "$type": "undefined" }] }
 ```
 
-`entries` is an ordered array of `[index, encoded value]` pairs. Indexes must be unique, non-negative integers smaller than `length`, and at most `2^32 - 2`. Missing indexes are holes. `length` may be at most `2^32 - 1`, subject to configured resource limits. Custom array properties, symbol keys, and non-enumerable/accessor indexed properties are unsupported.
+`entries` is a flat ordered array alternating index and encoded value. Its length must be even. Indexes must be unique, non-negative integers smaller than `length`, and at most `2^32 - 2`. Missing indexes are holes. `length` may be at most `2^32 - 1`, subject to configured resource limits. Custom array properties, symbol keys, and non-enumerable/accessor indexed properties are unsupported.
 
 ### Date
 
@@ -88,11 +88,11 @@ All fields shown below are required; no additional fields are allowed in version
 ### Map and Set
 
 ```json
-{ "type": "map", "entries": [["key", "value"]], "properties": [] }
+{ "type": "map", "entries": ["key", "value"], "properties": [] }
 { "type": "set", "values": ["value"], "properties": [] }
 ```
 
-Map entries and Set values preserve insertion order. Keys and values participate in the same graph as the root. Duplicate Map keys and duplicate Set values in a document are invalid.
+Map `entries` is a flat array alternating encoded keys and values; its length must be even. Map entries and Set values preserve insertion order. Keys and values participate in the same graph as the root. Duplicate Map keys and duplicate Set values in a document are invalid.
 
 ### ArrayBuffer
 
@@ -153,7 +153,7 @@ Supported built-ins preserve their documented intrinsic state plus enumerable ow
 - Duplicate JSON object member names are rejected before graph reconstruction. Key strings are compared after JSON string escape decoding, so equivalent spellings such as `"version"` and `"\u0076ersion"` are duplicates.
 - `format` must equal `jsonplus`.
 - `version` must be a positive safe integer. Unknown versions produce `UNSUPPORTED_VERSION`.
-- All fields and value tags must exactly match the version-1 schema.
+- Version 2 uses flat pair buffers for object properties, array entries, and Map entries. Version 1 documents are normalized in place to this internal layout and remain readable. All fields and value tags must exactly match the declared version schema.
 - References must be in range and view buffers must reference ArrayBuffer nodes.
 - All nodes must be reachable from the root.
 - Binary payloads must be canonical base64. View offsets, lengths, and alignment are validated before allocation.

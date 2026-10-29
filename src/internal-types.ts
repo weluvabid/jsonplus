@@ -1,5 +1,5 @@
 export const FORMAT = "jsonplus" as const;
-export const VERSION = 1 as const;
+export const VERSION = 2 as const;
 
 export type NumberTag = "nan" | "infinity" | "-infinity" | "-0";
 
@@ -13,12 +13,9 @@ export type EncodedValue =
   | { $type: "bigint"; value: string }
   | { $type: "number"; value: NumberTag };
 
-export type EncodedProperty = [key: string, value: EncodedValue];
-export type EncodedIndexEntry = [index: number, value: EncodedValue];
-export type EncodedMapEntry = [key: EncodedValue, value: EncodedValue];
-
 interface NodeWithProperties {
-  properties: EncodedProperty[];
+  /** Version 2 uses an alternating key/value buffer. */
+  properties: EncodedValue[];
 }
 
 export interface ObjectNode extends NodeWithProperties {
@@ -29,7 +26,8 @@ export interface ObjectNode extends NodeWithProperties {
 export interface ArrayNode {
   type: "array";
   length: number;
-  entries: EncodedIndexEntry[];
+  /** Alternating index/value entries. */
+  entries: EncodedValue[];
 }
 
 export interface DateNode extends NodeWithProperties {
@@ -46,7 +44,8 @@ export interface RegExpNode extends NodeWithProperties {
 
 export interface MapNode extends NodeWithProperties {
   type: "map";
-  entries: EncodedMapEntry[];
+  /** Alternating key/value entries. */
+  entries: EncodedValue[];
 }
 
 export interface SetNode extends NodeWithProperties {

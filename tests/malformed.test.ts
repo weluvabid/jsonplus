@@ -27,7 +27,7 @@ describe("malformed input", () => {
       "INVALID_ENVELOPE",
     );
     expectCode(
-      JSON.stringify({ format: "jsonplus", version: 2, root: null, nodes: [] }),
+      JSON.stringify({ format: "jsonplus", version: 3, root: null, nodes: [] }),
       "UNSUPPORTED_VERSION",
     );
     expectCode(
@@ -45,6 +45,30 @@ describe("malformed input", () => {
     expectCode(
       envelope({ $ref: 0, extra: true }, [{ type: "object", prototype: "object", properties: [] }]),
       "INVALID_REFERENCE",
+    );
+  });
+
+  it("rejects malformed version 2 flat pair buffers", () => {
+    const envelopeV2 = (root: unknown, nodes: unknown[] = []): string =>
+      JSON.stringify({ format: "jsonplus", version: 2, root, nodes });
+
+    expectCode(
+      envelopeV2({ $ref: 0 }, [{ type: "object", prototype: "object", properties: ["key"] }]),
+      "INVALID_NODE",
+    );
+    expectCode(
+      envelopeV2({ $ref: 0 }, [{ type: "array", length: 1, entries: [0] }]),
+      "INVALID_NODE",
+    );
+    expectCode(
+      envelopeV2({ $ref: 0 }, [{ type: "map", entries: ["key"], properties: [] }]),
+      "INVALID_NODE",
+    );
+    expectCode(
+      envelopeV2({ $ref: 0 }, [
+        { type: "object", prototype: "object", properties: ["x", 1, "x", 2] },
+      ]),
+      "INVALID_NODE",
     );
   });
 

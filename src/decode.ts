@@ -3,7 +3,6 @@ import { TYPED_ARRAY_BY_NAME } from "./builtins.js";
 import { JSONPlusError } from "./errors.js";
 import type {
   EncodedNode,
-  EncodedProperty,
   EncodedValue,
   JSONPlusOptions,
   ResolvedLimits,
@@ -347,22 +346,20 @@ function validateProperties(
   value: unknown,
   context: ValidationContext,
   nodeType: EncodedNode["type"],
-): EncodedProperty[] {
+): EncodedValue[] {
   if (!Array.isArray(value)) {
     throw new JSONPlusError("INVALID_NODE", `${nodeType} properties must be an array.`);
   }
-  checkCollectionLength(value.length, context.limits, `${nodeType} properties`);
+  if (value.length % 2 !== 0) {
+    throw new JSONPlusError("INVALID_NODE", `${nodeType} properties must contain key/value pairs.`);
+  }
+  const propertyCount = value.length / 2;
+  checkCollectionLength(propertyCount, context.limits, `${nodeType} properties`);
+  if (propertyCount === 0) return value as EncodedValue[];
 
   const seenKeys = new Set<string>();
-  for (let index = 0; index < value.length; index += 1) {
-    const candidate: unknown = value[index];
-    if (!Array.isArray(candidate) || candidate.length !== 2) {
-      throw new JSONPlusError(
-        "INVALID_NODE",
-        `${nodeType} property ${index} must be a key/value pair.`,
-      );
-    }
-    const key: unknown = candidate[0];
+  for (let index = 0; index < value.length; index += 2) {
+    const key: unknown = value[index];
     if (typeof key !== "string") {
       throw new JSONPlusError("INVALID_NODE", `${nodeType} property keys must be strings.`);
     }
@@ -388,9 +385,9 @@ function validateProperties(
       );
     }
 
-    validateValue(candidate[1], context, true);
+    validateValue(value[index + 1], context, true);
   }
-  return value as EncodedProperty[];
+  return value as EncodedValue[];
 }
 
 function isCanonicalNumericIndexString(key: string): boolean {
@@ -419,25 +416,34 @@ function validateNode(candidate: unknown, context: ValidationContext): EncodedNo
       if (!Array.isArray(entries)) {
         throw new JSONPlusError("INVALID_NODE", "Array entries must be an array.");
       }
-      checkCollectionLength(entries.length, context.limits, "Array entries");
-      const seenIndices = new Set<number>();
-      for (let entryIndex = 0; entryIndex < entries.length; entryIndex += 1) {
-        const entry: unknown = entries[entryIndex];
-        if (!Array.isArray(entry) || entry.length !== 2) {
-          throw new JSONPlusError(
-            "INVALID_NODE",
-            `Array entry ${entryIndex} must be an index/value pair.`,
-          );
-        }
-        const index = assertSafeInteger(entry[0], "Array index", 0xffff_fffe);
+      if (entries.length % 2 !== 0) {
+        throw new JSONPlusError("INVALID_NODE", "Array entries must contain index/value pairs.");
+      }
+      const entryCount = entries.length / 2;
+      checkCollectionLength(entryCount, context.limits, "Array entries");
+      const useIndexBitset = entryCount > 0 && length <= 64_000_000 && entryCount * 256 >= length;
+      const seenBits = useIndexBitset ? new Uint8Array(Math.ceil(length / 8)) : undefined;
+      const seenIndices = entryCount > 0 && !useIndexBitset ? new Set<number>() : undefined;
+      for (let entryIndex = 0; entryIndex < entries.length; entryIndex += 2) {
+        const index = assertSafeInteger(entries[entryIndex], "Array index", 0xffff_fffe);
         if (index >= length) {
           throw new JSONPlusError("INVALID_NODE", "Array entry index is outside the array length.");
         }
-        if (seenIndices.has(index)) {
-          throw new JSONPlusError("INVALID_NODE", `Array contains duplicate index ${index}.`);
+        if (seenBits !== undefined) {
+          const byteIndex = index >>> 3;
+          const mask = 1 << (index & 7);
+          const flags = seenBits[byteIndex] ?? 0;
+          if ((flags & mask) !== 0) {
+            throw new JSONPlusError("INVALID_NODE", `Array contains duplicate index ${index}.`);
+          }
+          seenBits[byteIndex] = flags | mask;
+        } else if (seenIndices !== undefined) {
+          if (seenIndices.has(index)) {
+            throw new JSONPlusError("INVALID_NODE", `Array contains duplicate index ${index}.`);
+          }
+          seenIndices.add(index);
         }
-        seenIndices.add(index);
-        validateValue(entry[1], context, true);
+        validateValue(entries[entryIndex + 1], context, true);
       }
       return candidate as unknown as EncodedNode;
     }
@@ -499,14 +505,13 @@ function validateNode(candidate: unknown, context: ValidationContext): EncodedNo
       if (!Array.isArray(entries)) {
         throw new JSONPlusError("INVALID_NODE", "Map entries must be an array.");
       }
-      checkCollectionLength(entries.length, context.limits, "Map entries");
-      for (let index = 0; index < entries.length; index += 1) {
-        const entry: unknown = entries[index];
-        if (!Array.isArray(entry) || entry.length !== 2) {
-          throw new JSONPlusError("INVALID_NODE", `Map entry ${index} must be a key/value pair.`);
-        }
-        validateValue(entry[0], context, true);
-        validateValue(entry[1], context, true);
+      if (entries.length % 2 !== 0) {
+        throw new JSONPlusError("INVALID_NODE", "Map entries must contain key/value pairs.");
+      }
+      checkCollectionLength(entries.length / 2, context.limits, "Map entries");
+      for (let index = 0; index < entries.length; index += 2) {
+        validateValue(entries[index], context, true);
+        validateValue(entries[index + 1], context, true);
       }
       validateProperties(candidate["properties"], context, type);
       return candidate as unknown as EncodedNode;
@@ -624,33 +629,39 @@ function validateBufferViews(
   }
 }
 
+function visitFlatPairs(values: EncodedValue[], visit: (value: EncodedValue) => void): void {
+  for (let index = 1; index < values.length; index += 2) {
+    const value = values[index];
+    if (value !== undefined) visit(value);
+  }
+}
+
 function visitNodeValues(node: EncodedNode, visit: (value: EncodedValue) => void): void {
   switch (node.type) {
     case "object":
     case "date":
     case "array-buffer":
+      visitFlatPairs(node.properties, visit);
+      break;
     case "typed-array":
     case "data-view":
-      for (const [, value] of node.properties) visit(value);
-      if (node.type === "typed-array" || node.type === "data-view") visit(node.buffer);
+      visitFlatPairs(node.properties, visit);
+      visit(node.buffer);
       break;
     case "array":
-      for (const [, value] of node.entries) visit(value);
+      visitFlatPairs(node.entries, visit);
       break;
     case "regexp":
       visit(node.lastIndex);
-      for (const [, value] of node.properties) visit(value);
+      visitFlatPairs(node.properties, visit);
       break;
     case "map":
-      for (const [key, value] of node.entries) {
-        visit(key);
-        visit(value);
-      }
-      for (const [, value] of node.properties) visit(value);
+      for (const value of node.entries) visit(value);
+      visitFlatPairs(node.properties, visit);
       break;
     case "set":
       for (const value of node.values) visit(value);
-      for (const [, value] of node.properties) visit(value);
+      visitFlatPairs(node.properties, visit);
       break;
   }
 }
@@ -704,6 +715,49 @@ interface ValidatedDocument {
   binaryByteLengths: WeakMap<EncodedNode, number>;
 }
 
+function flattenVersionOnePairs(value: unknown, fieldName: string): void {
+  if (!Array.isArray(value)) return;
+  const pairCount = value.length;
+
+  for (let index = 0; index < pairCount; index += 1) {
+    const pair: unknown = value[index];
+    if (!Array.isArray(pair) || pair.length !== 2) {
+      throw new JSONPlusError("INVALID_NODE", `${fieldName} entry ${index} must be a pair.`);
+    }
+  }
+
+  value.length = pairCount * 2;
+  for (let index = pairCount - 1; index >= 0; index -= 1) {
+    const pair = value[index] as unknown[];
+    value[index * 2] = pair[0];
+    value[index * 2 + 1] = pair[1];
+  }
+}
+
+function normalizeVersionOneNodes(nodes: unknown[]): void {
+  for (const candidate of nodes) {
+    if (!isRecord(candidate)) continue;
+    const type = candidate["type"];
+    if (type === "array") {
+      flattenVersionOnePairs(candidate["entries"], "Array entries");
+      continue;
+    }
+    if (type === "map") flattenVersionOnePairs(candidate["entries"], "Map entries");
+    if (
+      type === "object" ||
+      type === "date" ||
+      type === "regexp" ||
+      type === "map" ||
+      type === "set" ||
+      type === "array-buffer" ||
+      type === "typed-array" ||
+      type === "data-view"
+    ) {
+      flattenVersionOnePairs(candidate["properties"], `${type} properties`);
+    }
+  }
+}
+
 function validateDocument(raw: unknown, limits: ResolvedLimits): ValidatedDocument {
   assertRecord(raw, "Envelope");
   assertEnvelopeKeys(raw);
@@ -714,7 +768,7 @@ function validateDocument(raw: unknown, limits: ResolvedLimits): ValidatedDocume
   if (typeof version !== "number" || !Number.isSafeInteger(version) || version < 1) {
     throw new JSONPlusError("INVALID_ENVELOPE", "Version must be a positive integer.");
   }
-  if (version !== VERSION) {
+  if (version !== 1 && version !== VERSION) {
     throw new JSONPlusError("UNSUPPORTED_VERSION", `JSON+ version ${version} is not supported.`);
   }
   const rawNodes = raw["nodes"];
@@ -728,6 +782,8 @@ function validateDocument(raw: unknown, limits: ResolvedLimits): ValidatedDocume
     );
   }
 
+  if (version === 1) normalizeVersionOneNodes(rawNodes);
+
   const binaryByteLengths = new WeakMap<EncodedNode, number>();
   const context: ValidationContext = {
     limits,
@@ -738,8 +794,8 @@ function validateDocument(raw: unknown, limits: ResolvedLimits): ValidatedDocume
   };
   validateValue(raw["root"], context, false);
 
-  // JSON.parse already produced private data structures. Validate them in place instead of
-  // allocating a second node table, property table, and tuple for every edge.
+  // JSON.parse already produced private data structures. Validate them in place without
+  // duplicating the node table or pair buffers.
   const nodes = rawNodes as EncodedNode[];
   for (let nodeId = 0; nodeId < nodes.length; nodeId += 1) {
     validateNode(nodes[nodeId], context);
@@ -875,12 +931,10 @@ function allocateGraph(
   return allocated;
 }
 
-function defineProperties(
-  target: object,
-  properties: EncodedProperty[],
-  allocated: unknown[],
-): void {
-  for (const [key, value] of properties) {
+function defineProperties(target: object, properties: EncodedValue[], allocated: unknown[]): void {
+  for (let index = 0; index < properties.length; index += 2) {
+    const key = properties[index] as string;
+    const value = properties[index + 1] as EncodedValue;
     try {
       Object.defineProperty(target, key, {
         value: resolveValue(value, allocated),
@@ -916,8 +970,10 @@ function populateGraph(nodes: EncodedNode[], allocated: unknown[]): void {
         defineProperties(target, node.properties, allocated);
         break;
       case "array":
-        for (const [index, value] of node.entries) {
-          Object.defineProperty(target, String(index), {
+        for (let index = 0; index < node.entries.length; index += 2) {
+          const arrayIndex = node.entries[index] as number;
+          const value = node.entries[index + 1] as EncodedValue;
+          Object.defineProperty(target, String(arrayIndex), {
             value: resolveValue(value, allocated),
             enumerable: true,
             configurable: true,
@@ -935,12 +991,12 @@ function populateGraph(nodes: EncodedNode[], allocated: unknown[]): void {
       }
       case "map": {
         const map = target as Map<unknown, unknown>;
-        for (const [encodedKey, encodedValue] of node.entries) {
-          const key = resolveValue(encodedKey, allocated);
+        for (let index = 0; index < node.entries.length; index += 2) {
+          const key = resolveValue(node.entries[index] as EncodedValue, allocated);
           if (map.has(key)) {
             throw new JSONPlusError("INVALID_NODE", "Map node contains duplicate keys.");
           }
-          map.set(key, resolveValue(encodedValue, allocated));
+          map.set(key, resolveValue(node.entries[index + 1] as EncodedValue, allocated));
         }
         defineProperties(map, node.properties, allocated);
         break;

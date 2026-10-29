@@ -59,7 +59,7 @@ npm run benchmark
 
 ## Contract at a glance
 
-- The wire envelope declares `format: "jsonplus"` and `version: 1`.
+- The wire envelope declares `format: "jsonplus"` and `version: 2`. Pair collections use flat alternating buffers to avoid per-entry tuple allocations; version 1 documents remain readable.
 - A node table represents the graph. References point to node indexes, so forward references, cycles, and shared identity are supported.
 - The decoder allocates nodes before populating edges and uses iterative graph processing.
 - Plain objects preserve enumerable own string-keyed data properties and the distinction between `Object.prototype` and a null prototype.
@@ -99,6 +99,6 @@ Exceeding a limit raises `JSONPlusError` with code `RESOURCE_LIMIT_EXCEEDED`. Th
 
 JSON+ is a data serializer, not a JavaScript runtime snapshot, schema system, or RPC protocol. It does not preserve property descriptors, object extensibility, arbitrary prototype chains, closures, weak collection state, or external references. Restored enumerable data properties are writable and configurable. The initial implementation supports same-realm plain objects and built-ins; cross-realm objects and custom subclasses are rejected.
 
-Proxy behavior cannot be reliably detected from JavaScript. Reflection over a proxy may execute its traps; JSON+ wraps inspection failures, but cannot guarantee that inspecting a hostile proxy has no side effects. Resizable ArrayBuffers and SharedArrayBuffers are unsupported in version 1.
+Proxy behavior cannot be reliably detected from JavaScript. Reflection over a proxy may execute its traps; JSON+ wraps inspection failures, but cannot guarantee that inspecting a hostile proxy has no side effects. Resizable ArrayBuffers and SharedArrayBuffers remain unsupported.
 
-The complete version-1 contract, wire schema, and error semantics are in [SPEC.md](./SPEC.md).
+The versioned contract, wire schema, backwards-compatibility rules, and error semantics are in [SPEC.md](./SPEC.md).
