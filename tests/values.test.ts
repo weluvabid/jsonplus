@@ -158,6 +158,50 @@ describe("binary views", () => {
     }
   });
 
+  it("allocates views whose backing buffer appears later in the node table", () => {
+    const encoded = JSON.stringify({
+      format: "jsonplus",
+      version: 1,
+      root: { $ref: 0 },
+      nodes: [
+        {
+          type: "object",
+          prototype: "object",
+          properties: ["bytes", { $ref: 1 }, "view", { $ref: 2 }, "buffer", { $ref: 3 }],
+        },
+        {
+          type: "typed-array",
+          constructor: "Uint8Array",
+          buffer: { $ref: 3 },
+          byteOffset: 0,
+          length: 4,
+          properties: [],
+        },
+        {
+          type: "data-view",
+          buffer: { $ref: 3 },
+          byteOffset: 1,
+          byteLength: 2,
+          properties: [],
+        },
+        { type: "array-buffer", bytes: "AQIDBA==", properties: [] },
+      ],
+    });
+
+    const restored = decode(encoded) as {
+      bytes: Uint8Array;
+      view: DataView;
+      buffer: ArrayBuffer;
+    };
+
+    expect(restored.buffer).toBeInstanceOf(ArrayBuffer);
+    expect(restored.bytes.buffer).toBe(restored.buffer);
+    expect(restored.view.buffer).toBe(restored.buffer);
+    expect([...restored.bytes]).toEqual([1, 2, 3, 4]);
+    expect(restored.view.getUint8(0)).toBe(2);
+    expect(restored.view.getUint8(1)).toBe(3);
+  });
+
   it("preserves shared backing-buffer identity, offsets, and overlapping writes", () => {
     const buffer = new ArrayBuffer(16);
     const bytes = new Uint8Array(buffer, 0, 12);

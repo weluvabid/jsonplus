@@ -34,37 +34,92 @@ export function resolveValue(value: EncodedValue, nodes: unknown[]): unknown {
   }
 }
 
+type ViewNode = Extract<EncodedNode, { type: "typed-array" | "data-view" }>;
+
+function allocateView(id: number, node: ViewNode, allocated: unknown[]): void {
+  const buffer = allocated[node.buffer.$ref];
+  if (!(buffer instanceof ArrayBuffer)) {
+    throw new JSONPlusError(
+      "INVALID_REFERENCE",
+      `Node ${id} does not reference an allocated ArrayBuffer.`,
+    );
+  }
+
+  try {
+    if (node.type === "typed-array") {
+      const descriptor = TYPED_ARRAY_BY_NAME.get(node.constructor);
+      if (descriptor === undefined) {
+        throw new JSONPlusError("INVALID_NODE", "Typed-array constructor is unsupported.");
+      }
+      allocated[id] = descriptor.create(buffer, node.byteOffset, node.length);
+    } else {
+      allocated[id] = new DataView(buffer, node.byteOffset, node.byteLength);
+    }
+  } catch (cause) {
+    if (cause instanceof JSONPlusError) throw cause;
+    throw new JSONPlusError("INVALID_NODE", `View node ${id} could not be allocated.`, { cause });
+  }
+}
+
 export function allocateGraph(
   nodes: EncodedNode[],
   binaryByteLengths: WeakMap<EncodedNode, number>,
 ): unknown[] {
   const allocated: unknown[] = new Array(nodes.length);
+  const deferredViews = new Map<number, number[]>();
 
   for (let id = 0; id < nodes.length; id += 1) {
     const node = nodes[id];
-    if (node?.type !== "array-buffer") continue;
-    try {
-      const byteLength = binaryByteLengths.get(node);
-      if (byteLength === undefined) {
-        throw new JSONPlusError("INVALID_BINARY", "ArrayBuffer byte length was not validated.");
+    if (node === undefined) continue;
+
+    if (node.type === "array-buffer") {
+      try {
+        const byteLength = binaryByteLengths.get(node);
+        if (byteLength === undefined) {
+          throw new JSONPlusError("INVALID_BINARY", "ArrayBuffer byte length was not validated.");
+        }
+        allocated[id] = decodeBase64(node.bytes, byteLength);
+      } catch (cause) {
+        if (cause instanceof JSONPlusError) throw cause;
+        throw new JSONPlusError("INVALID_BINARY", "ArrayBuffer bytes could not be decoded.", {
+          cause,
+        });
       }
-      allocated[id] = decodeBase64(node.bytes, byteLength);
-    } catch (cause) {
-      if (cause instanceof JSONPlusError) throw cause;
-      throw new JSONPlusError("INVALID_BINARY", "ArrayBuffer bytes could not be decoded.", {
-        cause,
-      });
-    }
-  }
 
-  for (let id = 0; id < nodes.length; id += 1) {
-    const node = nodes[id];
-    if (
-      node === undefined ||
-      node.type === "array-buffer" ||
-      node.type === "typed-array" ||
-      node.type === "data-view"
-    ) {
+      const waiting = deferredViews.get(id);
+      if (waiting !== undefined) {
+        for (const viewId of waiting) {
+          const viewNode = nodes[viewId];
+          if (
+            viewNode === undefined ||
+            (viewNode.type !== "typed-array" && viewNode.type !== "data-view")
+          ) {
+            throw new JSONPlusError("INVALID_NODE", `Deferred view node ${viewId} is invalid.`);
+          }
+          allocateView(viewId, viewNode, allocated);
+        }
+        deferredViews.delete(id);
+      }
+      continue;
+    }
+
+    if (node.type === "typed-array" || node.type === "data-view") {
+      const bufferId = node.buffer.$ref;
+      if (allocated[bufferId] instanceof ArrayBuffer) {
+        allocateView(id, node, allocated);
+      } else if (bufferId > id && nodes[bufferId]?.type === "array-buffer") {
+        const waiting = deferredViews.get(bufferId);
+        if (waiting === undefined) {
+          deferredViews.set(bufferId, [id]);
+        } else {
+          waiting.push(id);
+        }
+      } else {
+        throw new JSONPlusError(
+          "INVALID_REFERENCE",
+          `Node ${id} does not reference an allocated ArrayBuffer.`,
+        );
+      }
       continue;
     }
 
@@ -100,31 +155,8 @@ export function allocateGraph(
     }
   }
 
-  for (let id = 0; id < nodes.length; id += 1) {
-    const node = nodes[id];
-    if (node === undefined || (node.type !== "typed-array" && node.type !== "data-view")) continue;
-    const buffer = allocated[node.buffer.$ref];
-    if (!(buffer instanceof ArrayBuffer)) {
-      throw new JSONPlusError(
-        "INVALID_REFERENCE",
-        `Node ${id} does not reference an allocated ArrayBuffer.`,
-      );
-    }
-
-    try {
-      if (node.type === "typed-array") {
-        const descriptor = TYPED_ARRAY_BY_NAME.get(node.constructor);
-        if (descriptor === undefined) {
-          throw new JSONPlusError("INVALID_NODE", "Typed-array constructor is unsupported.");
-        }
-        allocated[id] = descriptor.create(buffer, node.byteOffset, node.length);
-      } else {
-        allocated[id] = new DataView(buffer, node.byteOffset, node.byteLength);
-      }
-    } catch (cause) {
-      if (cause instanceof JSONPlusError) throw cause;
-      throw new JSONPlusError("INVALID_NODE", `View node ${id} could not be allocated.`, { cause });
-    }
+  if (deferredViews.size !== 0) {
+    throw new JSONPlusError("INVALID_REFERENCE", "One or more view buffers were not allocated.");
   }
 
   return allocated;
