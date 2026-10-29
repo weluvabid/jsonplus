@@ -158,10 +158,7 @@ describe("malformed input", () => {
       envelope({ $ref: 0 }, [
         {
           type: "map",
-          entries: [
-            [1, "a"],
-            [1, "b"],
-          ],
+          entries: [1, "a", 1, "b"],
           properties: [],
         },
       ]),

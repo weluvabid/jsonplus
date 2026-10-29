@@ -35,6 +35,10 @@ restored.score; // NaN
 restored.first.count; // 1n
 ```
 
+## Runtime support
+
+JSON+ has no runtime dependencies and works in Node.js and browsers. Node uses its native `Buffer` codec when available; browsers use native `Uint8Array` Base64 methods when supported, with a chunked `btoa`/`atob` fallback for older browsers. Strict canonical Base64 validation is shared across all paths.
+
 ## Development
 
 Requires Node.js 22 or newer and npm 10 or newer.

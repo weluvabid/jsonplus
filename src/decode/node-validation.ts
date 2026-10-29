@@ -9,7 +9,6 @@ import {
   assertExactKeys,
   assertRecord,
   assertSafeInteger,
-  isCanonicalNumericIndexString,
   isReferenceToken,
   type ValidationContext,
   validateProperties,

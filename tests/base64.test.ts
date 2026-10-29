@@ -1,3 +1,4 @@
+import { Buffer as NodeBuffer } from "node:buffer";
 import { describe, expect, it, vi } from "vitest";
 import { base64ByteLength, decodeBase64, encodeBase64 } from "../src/base64.js";
 import { JSONPlusError } from "../src/errors.js";
@@ -12,7 +13,7 @@ describe("base64 binary codec", () => {
       }
 
       const encoded = encodeBase64(source.buffer as ArrayBuffer);
-      expect(encoded).toBe(Buffer.from(source).toString("base64"));
+      expect(encoded).toBe(NodeBuffer.from(source).toString("base64"));
       expect(base64ByteLength(encoded)).toBe(length);
       expect(new Uint8Array(decodeBase64(encoded))).toEqual(source);
     }
@@ -27,9 +28,95 @@ describe("base64 binary codec", () => {
     vi.stubGlobal("btoa", undefined);
     try {
       const encoded = encodeBase64(source.buffer as ArrayBuffer);
-      expect(encoded).toBe(Buffer.from(source).toString("base64"));
+      expect(encoded).toBe(NodeBuffer.from(source).toString("base64"));
       expect(new Uint8Array(decodeBase64(encoded))).toEqual(source);
     } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("uses chunked browser APIs when Node Buffer and native typed-array Base64 APIs are absent", () => {
+    const source = new Uint8Array(49_201);
+    for (let index = 0; index < source.length; index += 127) {
+      source[index] = (index * 17) & 0xff;
+    }
+
+    const originalToBase64 = Object.getOwnPropertyDescriptor(Uint8Array.prototype, "toBase64");
+    const originalFromBase64 = Object.getOwnPropertyDescriptor(Uint8Array, "fromBase64");
+    vi.stubGlobal("Buffer", undefined);
+    vi.stubGlobal("process", undefined);
+    Object.defineProperty(Uint8Array.prototype, "toBase64", {
+      configurable: true,
+      value: undefined,
+    });
+    Object.defineProperty(Uint8Array, "fromBase64", {
+      configurable: true,
+      value: undefined,
+    });
+    try {
+      const encoded = encodeBase64(source.buffer as ArrayBuffer);
+      expect(encoded).toBe(NodeBuffer.from(source).toString("base64"));
+      expect(base64ByteLength(encoded)).toBe(source.byteLength);
+      expect(new Uint8Array(decodeBase64(encoded))).toEqual(source);
+      expect(() => decodeBase64("AB==")).toThrowError(JSONPlusError);
+
+      const detached = new ArrayBuffer(8);
+      structuredClone(detached, { transfer: [detached] });
+      expect(() => encodeBase64(detached)).toThrowError(JSONPlusError);
+    } finally {
+      if (originalToBase64 === undefined) {
+        Reflect.deleteProperty(Uint8Array.prototype, "toBase64");
+      } else {
+        Object.defineProperty(Uint8Array.prototype, "toBase64", originalToBase64);
+      }
+      if (originalFromBase64 === undefined) {
+        Reflect.deleteProperty(Uint8Array, "fromBase64");
+      } else {
+        Object.defineProperty(Uint8Array, "fromBase64", originalFromBase64);
+      }
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("uses native typed-array Base64 methods when available", () => {
+    const source = new Uint8Array([0, 1, 2, 127, 128, 254, 255]);
+    let encodeCalls = 0;
+    let decodeCalls = 0;
+    const originalToBase64 = Object.getOwnPropertyDescriptor(Uint8Array.prototype, "toBase64");
+    const originalFromBase64 = Object.getOwnPropertyDescriptor(Uint8Array, "fromBase64");
+    vi.stubGlobal("Buffer", undefined);
+    vi.stubGlobal("process", undefined);
+    Object.defineProperty(Uint8Array.prototype, "toBase64", {
+      configurable: true,
+      value(this: Uint8Array) {
+        encodeCalls += 1;
+        return NodeBuffer.from(this).toString("base64");
+      },
+    });
+    Object.defineProperty(Uint8Array, "fromBase64", {
+      configurable: true,
+      value(value: string) {
+        decodeCalls += 1;
+        return new Uint8Array(NodeBuffer.from(value, "base64"));
+      },
+    });
+    try {
+      const encoded = encodeBase64(source.buffer as ArrayBuffer);
+      expect(encoded).toBe(NodeBuffer.from(source).toString("base64"));
+      expect(new Uint8Array(decodeBase64(encoded))).toEqual(source);
+      expect(encodeCalls).toBe(1);
+      expect(decodeCalls).toBe(1);
+    } finally {
+      if (originalToBase64 === undefined) {
+        Reflect.deleteProperty(Uint8Array.prototype, "toBase64");
+      } else {
+        Object.defineProperty(Uint8Array.prototype, "toBase64", originalToBase64);
+      }
+      if (originalFromBase64 === undefined) {
+        Reflect.deleteProperty(Uint8Array, "fromBase64");
+      } else {
+        Object.defineProperty(Uint8Array, "fromBase64", originalFromBase64);
+      }
       vi.unstubAllGlobals();
     }
   });
