@@ -1,0 +1,63 @@
+{
+  "name": "@weluvabid/jsonplus",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "A versioned, graph-aware serialization format for JavaScript values.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.0.0",
+    "npm": ">=10.0.0"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "SPEC.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
+    "clean": "node --input-type=module -e \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true })\"",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "typecheck": "tsc --noEmit",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run build",
+    "test:hardening": "vitest run tests/adversarial.test.ts tests/malformed.test.ts",
+    "benchmark": "npm run build && node benchmarks/serialization.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.0",
+    "@types/node": "22.18.6",
+    "eslint": "9.39.0",
+    "eslint-config-prettier": "10.1.8",
+    "fast-check": "4.3.0",
+    "prettier": "3.6.2",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.46.0",
+    "vitest": "5.0.5"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/weluvabid/jsonplus.git"
+  },
+  "homepage": "https://github.com/weluvabid/jsonplus#readme",
+  "bugs": {
+    "url": "https://github.com/weluvabid/jsonplus/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
