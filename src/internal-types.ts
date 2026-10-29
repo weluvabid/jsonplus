@@ -1,5 +1,5 @@
 export const FORMAT = "jsonplus" as const;
-export const VERSION = 2 as const;
+export const VERSION = 1 as const;
 
 export type NumberTag = "nan" | "infinity" | "-infinity" | "-0";
 
@@ -14,7 +14,7 @@ export type EncodedValue =
   | { $type: "number"; value: NumberTag };
 
 interface NodeWithProperties {
-  /** Version 2 uses an alternating key/value buffer. */
+  /** Alternating property key/value buffer. */
   properties: EncodedValue[];
 }
 

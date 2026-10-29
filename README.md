@@ -40,7 +40,7 @@ restored.first.count; // 1n
 Requires Node.js 22 or newer and npm 10 or newer.
 
 ```sh
-npm install
+npm ci
 npm run check
 ```
 
@@ -59,7 +59,7 @@ npm run benchmark
 
 ## Contract at a glance
 
-- The wire envelope declares `format: "jsonplus"` and `version: 2`. Pair collections use flat alternating buffers to avoid per-entry tuple allocations; version 1 documents remain readable.
+- The wire envelope declares `format: "jsonplus"` and `version: 1`. Pair collections use flat alternating buffers to avoid per-entry tuple allocations. This is the first and only supported wire schema.
 - A node table represents the graph. References point to node indexes, so forward references, cycles, and shared identity are supported.
 - The decoder allocates nodes before populating edges and uses iterative graph processing.
 - Plain objects preserve enumerable own string-keyed data properties and the distinction between `Object.prototype` and a null prototype.
@@ -101,4 +101,4 @@ JSON+ is a data serializer, not a JavaScript runtime snapshot, schema system, or
 
 Proxy behavior cannot be reliably detected from JavaScript. Reflection over a proxy may execute its traps; JSON+ wraps inspection failures, but cannot guarantee that inspecting a hostile proxy has no side effects. Resizable ArrayBuffers and SharedArrayBuffers remain unsupported.
 
-The versioned contract, wire schema, backwards-compatibility rules, and error semantics are in [SPEC.md](./SPEC.md).
+The wire schema, graph semantics, and error contract are in [SPEC.md](./SPEC.md).

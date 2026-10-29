@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import { JSONPlusError } from "./errors.js";
 
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -6,6 +7,7 @@ for (let index = 0; index < ALPHABET.length; index += 1) {
   DECODE[ALPHABET.charCodeAt(index)] = index;
 }
 
+/** Return the decoded size from the encoded shape without scanning the payload. */
 export function base64EncodedByteLength(value: string): number {
   if (value.length === 0) return 0;
   if (value.length % 4 !== 0) {
@@ -16,6 +18,7 @@ export function base64EncodedByteLength(value: string): number {
   return (value.length / 4) * 3 - padding;
 }
 
+/** Validate strict canonical standard base64 and return its decoded byte length. */
 export function base64ByteLength(value: string): number {
   const byteLength = base64EncodedByteLength(value);
   if (value.length === 0) return 0;
@@ -51,121 +54,40 @@ export function base64ByteLength(value: string): number {
   return byteLength;
 }
 
-type GlobalWithBtoa = typeof globalThis & { btoa?: (value: string) => string };
-
+/** Encode an ArrayBuffer using Node's native base64 implementation. */
 export function encodeBase64(buffer: ArrayBuffer): string {
-  let bytes: Uint8Array;
   try {
-    bytes = new Uint8Array(buffer);
+    return Buffer.from(buffer).toString("base64");
   } catch (cause) {
     throw new JSONPlusError("UNSUPPORTED_TYPE", "Detached ArrayBuffers cannot be encoded.", {
       cause,
     });
   }
-
-  if (bytes.byteLength === 0) return "";
-
-  const nativeBtoa = (globalThis as GlobalWithBtoa).btoa;
-  if (typeof nativeBtoa === "function") {
-    // The chunk size is divisible by three, so only the final chunk can contain padding.
-    // Native base64 conversion is substantially faster than encoding every quartet in JS.
-    const chunkSize = 12 * 1024;
-    const chunks: string[] = [];
-    for (let start = 0; start < bytes.length; start += chunkSize) {
-      const end = Math.min(start + chunkSize, bytes.length);
-      chunks.push(nativeBtoa.call(globalThis, String.fromCharCode(...bytes.subarray(start, end))));
-    }
-    return chunks.join("");
-  }
-
-  const chunkSize = 12 * 1024;
-  const chunks: string[] = [];
-
-  for (let start = 0; start < bytes.length; start += chunkSize) {
-    const end = Math.min(start + chunkSize, bytes.length);
-    const output = new Uint8Array(Math.ceil((end - start) / 3) * 4);
-    let source = start;
-    let target = 0;
-
-    while (source < end) {
-      const first = bytes[source] ?? 0;
-      const hasSecond = source + 1 < end;
-      const hasThird = source + 2 < end;
-      const second = hasSecond ? (bytes[source + 1] ?? 0) : 0;
-      const third = hasThird ? (bytes[source + 2] ?? 0) : 0;
-
-      output[target] = ALPHABET.charCodeAt(first >>> 2);
-      output[target + 1] = ALPHABET.charCodeAt(((first & 3) << 4) | (second >>> 4));
-      output[target + 2] = hasSecond
-        ? ALPHABET.charCodeAt(((second & 15) << 2) | (third >>> 6))
-        : 61;
-      output[target + 3] = hasThird ? ALPHABET.charCodeAt(third & 63) : 61;
-
-      source += 3;
-      target += 4;
-    }
-
-    chunks.push(String.fromCharCode(...output));
-  }
-
-  return chunks.join("");
 }
 
+/** Decode canonical base64 into a standalone ArrayBuffer. */
 export function decodeBase64(value: string, expectedByteLength?: number): ArrayBuffer {
-  const byteLength = expectedByteLength ?? base64EncodedByteLength(value);
-  if (byteLength !== base64EncodedByteLength(value)) {
+  const byteLength = base64ByteLength(value);
+  if (expectedByteLength !== undefined && byteLength !== expectedByteLength) {
     throw new JSONPlusError("INVALID_BINARY", "Base64 payload length does not match its metadata.");
   }
 
-  const buffer = new ArrayBuffer(byteLength);
-  const output = new Uint8Array(buffer);
-  let target = 0;
-
-  for (let source = 0; source < value.length; source += 4) {
-    const firstCode = value.charCodeAt(source);
-    const secondCode = value.charCodeAt(source + 1);
-    const thirdCode = value.charCodeAt(source + 2);
-    const fourthCode = value.charCodeAt(source + 3);
-    const first = (firstCode < DECODE.length ? DECODE[firstCode] : -1) ?? -1;
-    const second = (secondCode < DECODE.length ? DECODE[secondCode] : -1) ?? -1;
-    const third =
-      (thirdCode === 61 ? -1 : thirdCode < DECODE.length ? DECODE[thirdCode] : -1) ?? -1;
-    const fourth =
-      (fourthCode === 61 ? -1 : fourthCode < DECODE.length ? DECODE[fourthCode] : -1) ?? -1;
-    const finalChunk = source + 4 === value.length;
-
-    if (first < 0 || second < 0) {
-      throw new JSONPlusError("INVALID_BINARY", "Base64 payload contains an invalid character.");
-    }
-    if (thirdCode === 61) {
-      if (!finalChunk || fourthCode !== 61 || (second & 15) !== 0) {
-        throw new JSONPlusError("INVALID_BINARY", "Base64 payload has invalid padding.");
-      }
-    } else if (third < 0) {
-      throw new JSONPlusError("INVALID_BINARY", "Base64 payload contains an invalid character.");
-    }
-    if (fourthCode === 61) {
-      if (!finalChunk || (thirdCode !== 61 && (third & 3) !== 0)) {
-        throw new JSONPlusError("INVALID_BINARY", "Base64 payload has invalid padding.");
-      }
-    } else if (fourth < 0) {
-      throw new JSONPlusError("INVALID_BINARY", "Base64 payload contains an invalid character.");
-    }
-    if (!finalChunk && (thirdCode === 61 || fourthCode === 61)) {
-      throw new JSONPlusError("INVALID_BINARY", "Base64 payload has invalid padding.");
-    }
-
-    output[target] = (first << 2) | (second >>> 4);
-    target += 1;
-    if (thirdCode !== 61 && target < byteLength) {
-      output[target] = ((second & 15) << 4) | (third >>> 2);
-      target += 1;
-    }
-    if (fourthCode !== 61 && target < byteLength) {
-      output[target] = ((third & 3) << 6) | fourth;
-      target += 1;
-    }
+  let decoded: Buffer;
+  try {
+    // Buffer's decoder is lenient by design. The strict canonical check above is part of
+    // JSON+'s wire contract and must run before passing bytes to the native decoder.
+    decoded = Buffer.from(value, "base64");
+  } catch (cause) {
+    throw new JSONPlusError("INVALID_BINARY", "Base64 payload could not be decoded.", { cause });
   }
 
-  return buffer;
+  const backing = decoded.buffer;
+  if (
+    backing instanceof ArrayBuffer &&
+    decoded.byteOffset === 0 &&
+    decoded.byteLength === backing.byteLength
+  ) {
+    return backing;
+  }
+  return backing.slice(decoded.byteOffset, decoded.byteOffset + decoded.byteLength) as ArrayBuffer;
 }

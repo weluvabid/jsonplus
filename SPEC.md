@@ -1,10 +1,10 @@
-# JSON+ Version 2 Specification
+# JSON+ Version 1 Specification
 
 ## 1. Goals and non-goals
 
 JSON+ serializes a bounded subset of JavaScript values while preserving graph topology: supported reference identities, edges, cycles, and shared references. It is a snapshot format, not a live connection to the source graph.
 
-The format does not encode functions, closures, runtime behavior, schemas, remote calls, or arbitrary JavaScript object instances. Versions 1 and 2 do not support `SharedArrayBuffer`, resizable `ArrayBuffer`, weak collections, promises, DOM nodes, symbols, cross-realm objects, or arbitrary class instances.
+JSON+ does not encode functions, closures, runtime behavior, schemas, remote calls, arbitrary class instances, `SharedArrayBuffer`, resizable `ArrayBuffer`, weak collections, promises, DOM nodes, symbols, or cross-realm objects.
 
 ## 2. Envelope
 
@@ -13,7 +13,7 @@ A document is a JSON object with exactly these fields:
 ```json
 {
   "format": "jsonplus",
-  "version": 2,
+  "version": 1,
   "root": { "$ref": 0 },
   "nodes": []
 }
@@ -21,7 +21,7 @@ A document is a JSON object with exactly these fields:
 
 `root` is an encoded value. `nodes` is an array of node records. Node identity is the zero-based index of a node in this array. All nodes must be reachable from `root`; unreachable records are invalid.
 
-The exact set of fields is version-specific. Each version rejects unknown envelope fields, node fields, node types, and value tags. A decoder must not reinterpret an unknown tag as an ordinary object.
+The decoder rejects unknown envelope fields, node fields, node types, and value tags. It must not reinterpret an unknown tag as an ordinary object.
 
 ## 3. Encoded values
 
@@ -45,7 +45,7 @@ Raw JSON numbers must be finite and must not be negative zero. Special numeric v
 
 ## 4. Node schema
 
-All fields shown below are required; no additional fields are allowed in version 2. `properties` is a flat ordered array alternating string keys and encoded values. Property keys must be unique within a node. Version 1 used nested key/value pairs and remains decode-compatible.
+All fields shown below are required; no additional fields are allowed in version 1. `properties` is a flat ordered array alternating string keys and encoded values. Property keys must be unique within a node.
 
 ### Object
 
@@ -153,7 +153,7 @@ Supported built-ins preserve their documented intrinsic state plus enumerable ow
 - Duplicate JSON object member names are rejected before graph reconstruction. Key strings are compared after JSON string escape decoding, so equivalent spellings such as `"version"` and `"\u0076ersion"` are duplicates.
 - `format` must equal `jsonplus`.
 - `version` must be a positive safe integer. Unknown versions produce `UNSUPPORTED_VERSION`.
-- Version 2 uses flat pair buffers for object properties, array entries, and Map entries. Version 1 documents are normalized in place to this internal layout and remain readable. All fields and value tags must exactly match the declared version schema.
+- Version 1 uses flat pair buffers for object properties, array entries, and Map entries. Nested pair arrays are invalid. All fields and value tags must exactly match the version-1 schema.
 - References must be in range and view buffers must reference ArrayBuffer nodes.
 - All nodes must be reachable from the root.
 - Binary payloads must be canonical base64. View offsets, lengths, and alignment are validated before allocation.

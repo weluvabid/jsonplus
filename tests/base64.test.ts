@@ -18,7 +18,7 @@ describe("base64 binary codec", () => {
     }
   });
 
-  it("uses the portable encoder when native btoa is unavailable", () => {
+  it("uses the Node-native codec independently of global btoa", () => {
     const source = new Uint8Array(24_579);
     for (let index = 0; index < source.length; index += 127) {
       source[index] = (index * 13) & 0xff;
@@ -32,6 +32,12 @@ describe("base64 binary codec", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it("rejects detached ArrayBuffers", () => {
+    const detached = new ArrayBuffer(8);
+    structuredClone(detached, { transfer: [detached] });
+    expect(() => encodeBase64(detached)).toThrowError(JSONPlusError);
   });
 
   it("rejects invalid characters, misplaced padding, and non-canonical payloads", () => {
