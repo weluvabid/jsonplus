@@ -38,16 +38,17 @@ interface Classification {
 }
 
 interface PendingNode {
-  id: number;
+  pending: true;
   value: object;
   classification: Classification;
 }
 
+type NodeSlot = PendingNode | EncodedNode;
+
 interface EncodeContext {
   limits: ResolvedLimits;
   seen: WeakMap<object, number>;
-  nodes: (EncodedNode | undefined)[];
-  queue: PendingNode[];
+  nodes: NodeSlot[];
   edges: number;
   binaryBytes: number;
 }
@@ -159,8 +160,7 @@ function encodeReference(value: object, context: EncodeContext): EncodedValue {
 
   const id = context.nodes.length;
   context.seen.set(value, id);
-  context.nodes.push(undefined);
-  context.queue.push({ id, value, classification });
+  context.nodes.push({ pending: true, value, classification });
   return { $ref: id };
 }
 
@@ -403,27 +403,22 @@ export function encode(value: unknown, options?: JSONPlusOptions): string {
     limits,
     seen: new WeakMap<object, number>(),
     nodes: [],
-    queue: [],
     edges: 0,
     binaryBytes: 0,
   };
 
   const root = encodeValue(value, context);
-  for (let cursor = 0; cursor < context.queue.length; cursor += 1) {
-    const pending = context.queue[cursor];
-    if (pending === undefined) {
-      throw new JSONPlusError("INVALID_NODE", "Encoder queue became inconsistent.");
+  // The node table doubles as the work queue. Replace each pending node in place so the
+  // encoder needs neither a second queue nor a final copy of all node references.
+  for (let cursor = 0; cursor < context.nodes.length; cursor += 1) {
+    const pending = context.nodes[cursor];
+    if (pending === undefined || !("pending" in pending)) {
+      throw new JSONPlusError("INVALID_NODE", "Encoder worklist became inconsistent.");
     }
-    context.nodes[pending.id] = encodeNode(pending, context);
+    context.nodes[cursor] = encodeNode(pending, context);
   }
 
-  const nodes: EncodedNode[] = [];
-  for (const node of context.nodes) {
-    if (node === undefined) {
-      throw new JSONPlusError("INVALID_NODE", "Encoder produced an uninitialized node.");
-    }
-    nodes.push(node);
-  }
+  const nodes = context.nodes as unknown as EncodedNode[];
 
   const envelope: Envelope = { format: FORMAT, version: VERSION, root, nodes };
   let output: string;

@@ -87,6 +87,58 @@ export const TYPED_ARRAYS: readonly TypedArrayDescriptor[] = [
   },
 ];
 
+export const TYPED_ARRAY_BY_NAME: ReadonlyMap<string, TypedArrayDescriptor> = new Map(
+  TYPED_ARRAYS.map((descriptor) => [descriptor.name, descriptor]),
+);
+
+const TYPED_ARRAY_BY_PROTOTYPE: ReadonlyMap<object, TypedArrayDescriptor> = new Map(
+  TYPED_ARRAYS.map((descriptor) => [descriptor.prototype, descriptor]),
+);
+
+const REGEXP_SOURCE_GETTER = Object.getOwnPropertyDescriptor(RegExp.prototype, "source")?.get;
+type RegExpFlagGetter = readonly [flag: string, getter: (() => unknown) | undefined];
+const REGEXP_FLAG_GETTERS: readonly RegExpFlagGetter[] = [
+  ["d", Object.getOwnPropertyDescriptor(RegExp.prototype, "hasIndices")?.get],
+  ["g", Object.getOwnPropertyDescriptor(RegExp.prototype, "global")?.get],
+  ["i", Object.getOwnPropertyDescriptor(RegExp.prototype, "ignoreCase")?.get],
+  ["m", Object.getOwnPropertyDescriptor(RegExp.prototype, "multiline")?.get],
+  ["s", Object.getOwnPropertyDescriptor(RegExp.prototype, "dotAll")?.get],
+  ["u", Object.getOwnPropertyDescriptor(RegExp.prototype, "unicode")?.get],
+  ["v", Object.getOwnPropertyDescriptor(RegExp.prototype, "unicodeSets")?.get],
+  ["y", Object.getOwnPropertyDescriptor(RegExp.prototype, "sticky")?.get],
+];
+
+const TYPED_ARRAY_PROTOTYPE = Object.getPrototypeOf(Uint8Array.prototype) as object;
+const TYPED_ARRAY_BUFFER_GETTER = Object.getOwnPropertyDescriptor(
+  TYPED_ARRAY_PROTOTYPE,
+  "buffer",
+)?.get;
+const TYPED_ARRAY_OFFSET_GETTER = Object.getOwnPropertyDescriptor(
+  TYPED_ARRAY_PROTOTYPE,
+  "byteOffset",
+)?.get;
+const TYPED_ARRAY_LENGTH_GETTER = Object.getOwnPropertyDescriptor(
+  TYPED_ARRAY_PROTOTYPE,
+  "length",
+)?.get;
+const DATA_VIEW_BUFFER_GETTER = Object.getOwnPropertyDescriptor(DataView.prototype, "buffer")?.get;
+const DATA_VIEW_OFFSET_GETTER = Object.getOwnPropertyDescriptor(
+  DataView.prototype,
+  "byteOffset",
+)?.get;
+const DATA_VIEW_LENGTH_GETTER = Object.getOwnPropertyDescriptor(
+  DataView.prototype,
+  "byteLength",
+)?.get;
+const ARRAY_BUFFER_LENGTH_GETTER = Object.getOwnPropertyDescriptor(
+  ArrayBuffer.prototype,
+  "byteLength",
+)?.get;
+const ARRAY_BUFFER_RESIZABLE_GETTER = Object.getOwnPropertyDescriptor(
+  ArrayBuffer.prototype,
+  "resizable",
+)?.get;
+
 export function classifyReference(value: object): {
   kind: ReferenceKind;
   prototype: "object" | "null" | null;
@@ -120,7 +172,7 @@ export function classifyReference(value: object): {
   if (prototype === ArrayBuffer.prototype) return { kind: "array-buffer", prototype: null };
   if (prototype === DataView.prototype) return { kind: "data-view", prototype: null };
 
-  const typedArray = TYPED_ARRAYS.find((item) => item.prototype === prototype);
+  const typedArray = TYPED_ARRAY_BY_PROTOTYPE.get(prototype);
   if (typedArray !== undefined) {
     return { kind: "typed-array", prototype: null, typedArray };
   }
@@ -151,7 +203,7 @@ export function readDateTime(value: object): number {
 }
 
 export function readRegExpSource(value: object): string {
-  const getter = Object.getOwnPropertyDescriptor(RegExp.prototype, "source")?.get;
+  const getter = REGEXP_SOURCE_GETTER;
   if (getter === undefined) {
     throw new JSONPlusError(
       "UNSUPPORTED_TYPE",
@@ -168,20 +220,9 @@ export function readRegExpSource(value: object): string {
 }
 
 export function readRegExpFlags(value: object): string {
-  const flagGetters: readonly [string, string][] = [
-    ["hasIndices", "d"],
-    ["global", "g"],
-    ["ignoreCase", "i"],
-    ["multiline", "m"],
-    ["dotAll", "s"],
-    ["unicode", "u"],
-    ["unicodeSets", "v"],
-    ["sticky", "y"],
-  ];
   let flags = "";
 
-  for (const [name, flag] of flagGetters) {
-    const getter = Object.getOwnPropertyDescriptor(RegExp.prototype, name)?.get;
+  for (const [flag, getter] of REGEXP_FLAG_GETTERS) {
     if (getter === undefined) continue;
     try {
       if (Reflect.apply(getter, value, []) === true) flags += flag;
@@ -200,10 +241,9 @@ export function readTypedArrayState(value: object): {
   byteOffset: number;
   length: number;
 } {
-  const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype) as object;
-  const bufferGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, "buffer")?.get;
-  const offsetGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, "byteOffset")?.get;
-  const lengthGetter = Object.getOwnPropertyDescriptor(typedArrayPrototype, "length")?.get;
+  const bufferGetter = TYPED_ARRAY_BUFFER_GETTER;
+  const offsetGetter = TYPED_ARRAY_OFFSET_GETTER;
+  const lengthGetter = TYPED_ARRAY_LENGTH_GETTER;
 
   if (bufferGetter === undefined || offsetGetter === undefined || lengthGetter === undefined) {
     throw new JSONPlusError(
@@ -230,9 +270,9 @@ export function readDataViewState(value: object): {
   byteOffset: number;
   byteLength: number;
 } {
-  const bufferGetter = Object.getOwnPropertyDescriptor(DataView.prototype, "buffer")?.get;
-  const offsetGetter = Object.getOwnPropertyDescriptor(DataView.prototype, "byteOffset")?.get;
-  const lengthGetter = Object.getOwnPropertyDescriptor(DataView.prototype, "byteLength")?.get;
+  const bufferGetter = DATA_VIEW_BUFFER_GETTER;
+  const offsetGetter = DATA_VIEW_OFFSET_GETTER;
+  const lengthGetter = DATA_VIEW_LENGTH_GETTER;
 
   if (bufferGetter === undefined || offsetGetter === undefined || lengthGetter === undefined) {
     throw new JSONPlusError(
@@ -255,7 +295,7 @@ export function readDataViewState(value: object): {
 }
 
 export function readArrayBufferByteLength(value: object): number {
-  const getter = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength")?.get;
+  const getter = ARRAY_BUFFER_LENGTH_GETTER;
   if (getter === undefined) {
     throw new JSONPlusError(
       "UNSUPPORTED_TYPE",
@@ -272,7 +312,7 @@ export function readArrayBufferByteLength(value: object): number {
 }
 
 export function isResizableArrayBuffer(value: object): boolean {
-  const getter = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "resizable")?.get;
+  const getter = ARRAY_BUFFER_RESIZABLE_GETTER;
   if (getter === undefined) return false;
   try {
     return Reflect.apply(getter, value, []) === true;

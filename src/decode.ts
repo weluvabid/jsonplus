@@ -1,14 +1,11 @@
-import { base64ByteLength, decodeBase64 } from "./base64.js";
-import { TYPED_ARRAYS } from "./builtins.js";
+import { base64EncodedByteLength, decodeBase64 } from "./base64.js";
+import { TYPED_ARRAY_BY_NAME } from "./builtins.js";
 import { JSONPlusError } from "./errors.js";
 import type {
-  ArrayNode,
   EncodedNode,
   EncodedProperty,
   EncodedValue,
-  Envelope,
   JSONPlusOptions,
-  MapNode,
   ResolvedLimits,
 } from "./internal-types.js";
 import { FORMAT, VERSION } from "./internal-types.js";
@@ -23,6 +20,7 @@ interface ValidationContext {
   nodeCount: number;
   edges: number;
   binaryBytes: number;
+  binaryByteLengths: WeakMap<EncodedNode, number>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -30,6 +28,88 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 type JSONContainer = { kind: "object"; keys: Set<string> } | { kind: "array" };
+
+function hexDigit(code: number): number {
+  if (code >= 48 && code <= 57) return code - 48;
+  if (code >= 65 && code <= 70) return code - 55;
+  if (code >= 97 && code <= 102) return code - 87;
+  return 0;
+}
+
+function decodeJSONStringToken(
+  input: string,
+  start: number,
+  end: number,
+  firstEscape: number,
+): string {
+  const contentStart = start + 1;
+  const contentEnd = end - 1;
+  if (firstEscape < 0 || firstEscape >= contentEnd) {
+    return input.slice(contentStart, contentEnd);
+  }
+
+  const parts: string[] = [];
+  let segmentStart = contentStart;
+  for (let index = firstEscape; index < contentEnd; ) {
+    if (input.charCodeAt(index) !== 92) {
+      index += 1;
+      continue;
+    }
+
+    parts.push(input.slice(segmentStart, index));
+    const escaped = input.charCodeAt(index + 1);
+    switch (escaped) {
+      case 34:
+        parts.push('"');
+        index += 2;
+        break;
+      case 92:
+        parts.push("\\");
+        index += 2;
+        break;
+      case 47:
+        parts.push("/");
+        index += 2;
+        break;
+      case 98:
+        parts.push("\b");
+        index += 2;
+        break;
+      case 102:
+        parts.push("\f");
+        index += 2;
+        break;
+      case 110:
+        parts.push("\n");
+        index += 2;
+        break;
+      case 114:
+        parts.push("\r");
+        index += 2;
+        break;
+      case 116:
+        parts.push("\t");
+        index += 2;
+        break;
+      case 117: {
+        const code =
+          (hexDigit(input.charCodeAt(index + 2)) << 12) |
+          (hexDigit(input.charCodeAt(index + 3)) << 8) |
+          (hexDigit(input.charCodeAt(index + 4)) << 4) |
+          hexDigit(input.charCodeAt(index + 5));
+        parts.push(String.fromCharCode(code));
+        index += 6;
+        break;
+      }
+      default:
+        index += 2;
+        break;
+    }
+    segmentStart = index;
+  }
+  parts.push(input.slice(segmentStart, contentEnd));
+  return parts.join("");
+}
 
 function assertNoDuplicateObjectKeys(input: string): void {
   const containers: JSONContainer[] = [];
@@ -52,11 +132,13 @@ function assertNoDuplicateObjectKeys(input: string): void {
 
     const start = index;
     let escaped = false;
+    let firstEscape = -1;
     for (index += 1; index < input.length; index += 1) {
       const current = input[index];
       if (escaped) {
         escaped = false;
       } else if (current === "\\") {
+        if (firstEscape < 0) firstEscape = index;
         escaped = true;
       } else if (current === '"') {
         break;
@@ -77,7 +159,7 @@ function assertNoDuplicateObjectKeys(input: string): void {
         throw new JSONPlusError("INVALID_INPUT", "Object key appears outside an object.");
       }
 
-      const key = JSON.parse(input.slice(start, end)) as string;
+      const key = decodeJSONStringToken(input, start, end, firstEscape);
       if (container.keys.has(key)) {
         throw new JSONPlusError(
           "INVALID_INPUT",
@@ -93,10 +175,10 @@ function assertNoDuplicateObjectKeys(input: string): void {
 
 function isReferenceToken(value: unknown): value is { $ref: number } {
   return (
-    isRecord(value) &&
-    Object.keys(value).length === 1 &&
-    typeof value["$ref"] === "number" &&
-    Number.isSafeInteger(value["$ref"])
+    typeof value === "object" &&
+    value !== null &&
+    Object.hasOwn(value, "$ref") &&
+    typeof (value as { $ref?: unknown }).$ref === "number"
   );
 }
 
@@ -111,10 +193,9 @@ function assertExactKeys(
   keys: readonly string[],
   context: string,
 ): void {
-  const expected = new Set(keys);
   const actual = Object.keys(value);
   for (const key of actual) {
-    if (!expected.has(key)) {
+    if (!keys.includes(key)) {
       throw new JSONPlusError(
         "INVALID_NODE",
         `${context} contains unknown field ${JSON.stringify(key)}.`,
@@ -273,15 +354,15 @@ function validateProperties(
   checkCollectionLength(value.length, context.limits, `${nodeType} properties`);
 
   const seenKeys = new Set<string>();
-  const properties: EncodedProperty[] = [];
-  for (const [index, candidate] of value.entries()) {
+  for (let index = 0; index < value.length; index += 1) {
+    const candidate: unknown = value[index];
     if (!Array.isArray(candidate) || candidate.length !== 2) {
       throw new JSONPlusError(
         "INVALID_NODE",
         `${nodeType} property ${index} must be a key/value pair.`,
       );
     }
-    const key = candidate[0];
+    const key: unknown = candidate[0];
     if (typeof key !== "string") {
       throw new JSONPlusError("INVALID_NODE", `${nodeType} property keys must be strings.`);
     }
@@ -308,9 +389,8 @@ function validateProperties(
     }
 
     validateValue(candidate[1], context, true);
-    properties.push([key, candidate[1] as EncodedValue]);
   }
-  return properties;
+  return value as EncodedProperty[];
 }
 
 function isCanonicalNumericIndexString(key: string): boolean {
@@ -328,23 +408,21 @@ function validateNode(candidate: unknown, context: ValidationContext): EncodedNo
       if (candidate["prototype"] !== "object" && candidate["prototype"] !== "null") {
         throw new JSONPlusError("INVALID_NODE", "Object prototype must be 'object' or 'null'.");
       }
-      return {
-        type,
-        prototype: candidate["prototype"],
-        properties: validateProperties(candidate["properties"], context, type),
-      };
+      validateProperties(candidate["properties"], context, type);
+      return candidate as unknown as EncodedNode;
     }
     case "array": {
       assertExactKeys(candidate, ["type", "length", "entries"], "Array node");
       const length = assertSafeInteger(candidate["length"], "Array length", 0xffff_ffff);
       checkCollectionLength(length, context.limits, "Array length");
-      if (!Array.isArray(candidate["entries"])) {
+      const entries = candidate["entries"];
+      if (!Array.isArray(entries)) {
         throw new JSONPlusError("INVALID_NODE", "Array entries must be an array.");
       }
-      checkCollectionLength(candidate["entries"].length, context.limits, "Array entries");
+      checkCollectionLength(entries.length, context.limits, "Array entries");
       const seenIndices = new Set<number>();
-      const entries: ArrayNode["entries"] = [];
-      for (const [entryIndex, entry] of candidate["entries"].entries()) {
+      for (let entryIndex = 0; entryIndex < entries.length; entryIndex += 1) {
+        const entry: unknown = entries[entryIndex];
         if (!Array.isArray(entry) || entry.length !== 2) {
           throw new JSONPlusError(
             "INVALID_NODE",
@@ -360,9 +438,8 @@ function validateNode(candidate: unknown, context: ValidationContext): EncodedNo
         }
         seenIndices.add(index);
         validateValue(entry[1], context, true);
-        entries.push([index, entry[1] as EncodedValue]);
       }
-      return { type, length, entries };
+      return candidate as unknown as EncodedNode;
     }
     case "date": {
       assertExactKeys(candidate, ["type", "time", "properties"], "Date node");
@@ -376,11 +453,8 @@ function validateNode(candidate: unknown, context: ValidationContext): EncodedNo
           "Date timestamp must be null or a valid Date timestamp.",
         );
       }
-      return {
-        type,
-        time,
-        properties: validateProperties(candidate["properties"], context, type),
-      };
+      validateProperties(candidate["properties"], context, type);
+      return candidate as unknown as EncodedNode;
     }
     case "regexp": {
       assertExactKeys(
@@ -395,66 +469,60 @@ function validateNode(candidate: unknown, context: ValidationContext): EncodedNo
       }
       checkString(source, context.limits, "RegExp source");
       checkString(flags, context.limits, "RegExp flags");
-      const invalidFlags =
-        [...flags].some(
-          (flag, index) => REGEXP_FLAG_ORDER.indexOf(flag) < 0 || flags.indexOf(flag) !== index,
-        ) ||
-        [...flags]
-          .sort((left, right) => REGEXP_FLAG_ORDER.indexOf(left) - REGEXP_FLAG_ORDER.indexOf(right))
-          .join("") !== flags ||
-        (flags.includes("u") && flags.includes("v"));
-      if (invalidFlags) {
+      let previousFlagIndex = -1;
+      let hasUnicode = false;
+      let hasUnicodeSets = false;
+      let invalidFlags = false;
+      for (let index = 0; index < flags.length; index += 1) {
+        const flagIndex = REGEXP_FLAG_ORDER.indexOf(flags[index] ?? "");
+        if (flagIndex < 0 || flagIndex <= previousFlagIndex) {
+          invalidFlags = true;
+          break;
+        }
+        previousFlagIndex = flagIndex;
+        if (flags[index] === "u") hasUnicode = true;
+        if (flags[index] === "v") hasUnicodeSets = true;
+      }
+      if (invalidFlags || (hasUnicode && hasUnicodeSets)) {
         throw new JSONPlusError(
           "INVALID_NODE",
           "RegExp flags must be unique and in canonical order.",
         );
       }
       validateValue(candidate["lastIndex"], context, true);
-      return {
-        type,
-        source,
-        flags,
-        lastIndex: candidate["lastIndex"] as EncodedValue,
-        properties: validateProperties(candidate["properties"], context, type),
-      };
+      validateProperties(candidate["properties"], context, type);
+      return candidate as unknown as EncodedNode;
     }
     case "map": {
       assertExactKeys(candidate, ["type", "entries", "properties"], "Map node");
-      if (!Array.isArray(candidate["entries"])) {
+      const entries = candidate["entries"];
+      if (!Array.isArray(entries)) {
         throw new JSONPlusError("INVALID_NODE", "Map entries must be an array.");
       }
-      checkCollectionLength(candidate["entries"].length, context.limits, "Map entries");
-      const entries: MapNode["entries"] = [];
-      for (const [index, entry] of candidate["entries"].entries()) {
+      checkCollectionLength(entries.length, context.limits, "Map entries");
+      for (let index = 0; index < entries.length; index += 1) {
+        const entry: unknown = entries[index];
         if (!Array.isArray(entry) || entry.length !== 2) {
           throw new JSONPlusError("INVALID_NODE", `Map entry ${index} must be a key/value pair.`);
         }
         validateValue(entry[0], context, true);
         validateValue(entry[1], context, true);
-        entries.push([entry[0] as EncodedValue, entry[1] as EncodedValue]);
       }
-      return {
-        type,
-        entries,
-        properties: validateProperties(candidate["properties"], context, type),
-      };
+      validateProperties(candidate["properties"], context, type);
+      return candidate as unknown as EncodedNode;
     }
     case "set": {
       assertExactKeys(candidate, ["type", "values", "properties"], "Set node");
-      if (!Array.isArray(candidate["values"])) {
+      const values = candidate["values"];
+      if (!Array.isArray(values)) {
         throw new JSONPlusError("INVALID_NODE", "Set values must be an array.");
       }
-      checkCollectionLength(candidate["values"].length, context.limits, "Set values");
-      const values: EncodedValue[] = [];
-      for (const item of candidate["values"]) {
-        validateValue(item, context, true);
-        values.push(item as EncodedValue);
+      checkCollectionLength(values.length, context.limits, "Set values");
+      for (let index = 0; index < values.length; index += 1) {
+        validateValue(values[index], context, true);
       }
-      return {
-        type,
-        values,
-        properties: validateProperties(candidate["properties"], context, type),
-      };
+      validateProperties(candidate["properties"], context, type);
+      return candidate as unknown as EncodedNode;
     }
     case "array-buffer": {
       assertExactKeys(candidate, ["type", "bytes", "properties"], "ArrayBuffer node");
@@ -464,7 +532,9 @@ function validateNode(candidate: unknown, context: ValidationContext): EncodedNo
       }
       let byteLength: number;
       try {
-        byteLength = base64ByteLength(bytes);
+        // This is constant-time with respect to the payload; alphabet/canonical checks happen
+        // once in decodeBase64 while decoding the bytes.
+        byteLength = base64EncodedByteLength(bytes);
       } catch (error) {
         if (error instanceof JSONPlusError) throw error;
         throw new JSONPlusError("INVALID_BINARY", "ArrayBuffer base64 is invalid.", {
@@ -478,11 +548,9 @@ function validateNode(candidate: unknown, context: ValidationContext): EncodedNo
         );
       }
       context.binaryBytes += byteLength;
-      return {
-        type,
-        bytes,
-        properties: validateProperties(candidate["properties"], context, type),
-      };
+      context.binaryByteLengths.set(candidate as unknown as EncodedNode, byteLength);
+      validateProperties(candidate["properties"], context, type);
+      return candidate as unknown as EncodedNode;
     }
     case "typed-array": {
       assertExactKeys(
@@ -491,28 +559,15 @@ function validateNode(candidate: unknown, context: ValidationContext): EncodedNo
         "Typed-array node",
       );
       const constructor = candidate["constructor"];
-      if (
-        typeof constructor !== "string" ||
-        !TYPED_ARRAYS.some((item) => item.name === constructor)
-      ) {
+      if (typeof constructor !== "string" || !TYPED_ARRAY_BY_NAME.has(constructor)) {
         throw new JSONPlusError("INVALID_NODE", "Typed-array constructor is unsupported.");
       }
-      const byteOffset = assertSafeInteger(candidate["byteOffset"], "Typed-array byteOffset");
+      assertSafeInteger(candidate["byteOffset"], "Typed-array byteOffset");
       const length = assertSafeInteger(candidate["length"], "Typed-array length");
       checkCollectionLength(length, context.limits, "Typed-array length");
-      const buffer = validateReferenceSlot(
-        candidate["buffer"],
-        context,
-        "Typed-array buffer reference",
-      );
-      return {
-        type,
-        constructor,
-        buffer: { $ref: buffer },
-        byteOffset,
-        length,
-        properties: validateProperties(candidate["properties"], context, type),
-      };
+      validateReferenceSlot(candidate["buffer"], context, "Typed-array buffer reference");
+      validateProperties(candidate["properties"], context, type);
+      return candidate as unknown as EncodedNode;
     }
     case "data-view": {
       assertExactKeys(
@@ -520,27 +575,21 @@ function validateNode(candidate: unknown, context: ValidationContext): EncodedNo
         ["type", "buffer", "byteOffset", "byteLength", "properties"],
         "DataView node",
       );
-      const byteOffset = assertSafeInteger(candidate["byteOffset"], "DataView byteOffset");
-      const byteLength = assertSafeInteger(candidate["byteLength"], "DataView byteLength");
-      const buffer = validateReferenceSlot(
-        candidate["buffer"],
-        context,
-        "DataView buffer reference",
-      );
-      return {
-        type,
-        buffer: { $ref: buffer },
-        byteOffset,
-        byteLength,
-        properties: validateProperties(candidate["properties"], context, type),
-      };
+      assertSafeInteger(candidate["byteOffset"], "DataView byteOffset");
+      assertSafeInteger(candidate["byteLength"], "DataView byteLength");
+      validateReferenceSlot(candidate["buffer"], context, "DataView buffer reference");
+      validateProperties(candidate["properties"], context, type);
+      return candidate as unknown as EncodedNode;
     }
     default:
       throw new JSONPlusError("INVALID_NODE", "Unknown JSON+ node type.");
   }
 }
 
-function validateBufferViews(nodes: EncodedNode[]): void {
+function validateBufferViews(
+  nodes: EncodedNode[],
+  binaryByteLengths: WeakMap<EncodedNode, number>,
+): void {
   for (const node of nodes) {
     if (node.type !== "typed-array" && node.type !== "data-view") continue;
     const referenced = nodes[node.buffer.$ref];
@@ -551,9 +600,12 @@ function validateBufferViews(nodes: EncodedNode[]): void {
       );
     }
 
-    const bufferLength = base64ByteLength(referenced.bytes);
+    const bufferLength = binaryByteLengths.get(referenced);
+    if (bufferLength === undefined) {
+      throw new JSONPlusError("INVALID_REFERENCE", "ArrayBuffer byte length was not validated.");
+    }
     if (node.type === "typed-array") {
-      const descriptor = TYPED_ARRAYS.find((item) => item.name === node.constructor);
+      const descriptor = TYPED_ARRAY_BY_NAME.get(node.constructor);
       if (descriptor === undefined) {
         throw new JSONPlusError("INVALID_NODE", "Typed-array constructor is unsupported.");
       }
@@ -604,25 +656,40 @@ function visitNodeValues(node: EncodedNode, visit: (value: EncodedValue) => void
 }
 
 function validateReachability(root: EncodedValue, nodes: EncodedNode[]): void {
-  const reached = new Uint8Array(nodes.length);
-  const stack: number[] = [];
-  if (isReferenceToken(root)) stack.push(root.$ref);
+  const reached = new Uint8Array(Math.ceil(nodes.length / 8));
+  // Mark nodes when enqueued, not when popped: every node enters the stack at most once.
+  // The stack is therefore bounded by node count rather than graph edge count.
+  const stack = new Uint32Array(nodes.length);
+  let stackLength = 0;
 
-  while (stack.length > 0) {
-    const id = stack.pop();
-    if (id === undefined || reached[id] === 1) continue;
-    reached[id] = 1;
+  const enqueue = (id: number): void => {
+    const byteIndex = id >>> 3;
+    const mask = 1 << (id & 7);
+    const flags = reached[byteIndex] ?? 0;
+    if ((flags & mask) !== 0) return;
+    reached[byteIndex] = flags | mask;
+    stack[stackLength] = id;
+    stackLength += 1;
+  };
+  const visit = (value: EncodedValue): void => {
+    if (isReferenceToken(value)) enqueue(value.$ref);
+  };
+
+  if (isReferenceToken(root)) enqueue(root.$ref);
+  while (stackLength > 0) {
+    stackLength -= 1;
+    const id = stack[stackLength];
+    if (id === undefined) continue;
     const node = nodes[id];
     if (node === undefined) {
       throw new JSONPlusError("INVALID_REFERENCE", "Reference points to a nonexistent node.");
     }
-    visitNodeValues(node, (value) => {
-      if (isReferenceToken(value)) stack.push(value.$ref);
-    });
+    visitNodeValues(node, visit);
   }
 
-  for (let id = 0; id < reached.length; id += 1) {
-    if (reached[id] !== 1) {
+  for (let id = 0; id < nodes.length; id += 1) {
+    const isReached = ((reached[id >>> 3] ?? 0) & (1 << (id & 7))) !== 0;
+    if (!isReached) {
       throw new JSONPlusError(
         "UNREACHABLE_NODE",
         `Node ${id} is not reachable from the root value.`,
@@ -631,7 +698,13 @@ function validateReachability(root: EncodedValue, nodes: EncodedNode[]): void {
   }
 }
 
-function validateDocument(raw: unknown, limits: ResolvedLimits): Envelope {
+interface ValidatedDocument {
+  root: EncodedValue;
+  nodes: EncodedNode[];
+  binaryByteLengths: WeakMap<EncodedNode, number>;
+}
+
+function validateDocument(raw: unknown, limits: ResolvedLimits): ValidatedDocument {
   assertRecord(raw, "Envelope");
   assertEnvelopeKeys(raw);
   if (raw["format"] !== FORMAT) {
@@ -644,28 +717,37 @@ function validateDocument(raw: unknown, limits: ResolvedLimits): Envelope {
   if (version !== VERSION) {
     throw new JSONPlusError("UNSUPPORTED_VERSION", `JSON+ version ${version} is not supported.`);
   }
-  if (!Array.isArray(raw["nodes"])) {
+  const rawNodes = raw["nodes"];
+  if (!Array.isArray(rawNodes)) {
     throw new JSONPlusError("INVALID_ENVELOPE", "Envelope nodes must be an array.");
   }
-  if (raw["nodes"].length > limits.maxNodes) {
+  if (rawNodes.length > limits.maxNodes) {
     throw new JSONPlusError(
       "RESOURCE_LIMIT_EXCEEDED",
       `Node count exceeds maxNodes (${limits.maxNodes}).`,
     );
   }
 
+  const binaryByteLengths = new WeakMap<EncodedNode, number>();
   const context: ValidationContext = {
     limits,
-    nodeCount: raw["nodes"].length,
+    nodeCount: rawNodes.length,
     edges: 0,
     binaryBytes: 0,
+    binaryByteLengths,
   };
   validateValue(raw["root"], context, false);
-  const nodes = raw["nodes"].map((candidate) => validateNode(candidate, context));
-  validateBufferViews(nodes);
+
+  // JSON.parse already produced private data structures. Validate them in place instead of
+  // allocating a second node table, property table, and tuple for every edge.
+  const nodes = rawNodes as EncodedNode[];
+  for (let nodeId = 0; nodeId < nodes.length; nodeId += 1) {
+    validateNode(nodes[nodeId], context);
+  }
+  validateBufferViews(nodes, binaryByteLengths);
   validateReachability(raw["root"] as EncodedValue, nodes);
 
-  return { format: FORMAT, version: VERSION, root: raw["root"] as EncodedValue, nodes };
+  return { root: raw["root"] as EncodedValue, nodes, binaryByteLengths };
 }
 
 function resolveValue(value: EncodedValue, nodes: unknown[]): unknown {
@@ -697,14 +779,21 @@ function resolveValue(value: EncodedValue, nodes: unknown[]): unknown {
   }
 }
 
-function allocateGraph(nodes: EncodedNode[]): unknown[] {
+function allocateGraph(
+  nodes: EncodedNode[],
+  binaryByteLengths: WeakMap<EncodedNode, number>,
+): unknown[] {
   const allocated: unknown[] = new Array(nodes.length);
 
   for (let id = 0; id < nodes.length; id += 1) {
     const node = nodes[id];
     if (node?.type !== "array-buffer") continue;
     try {
-      allocated[id] = decodeBase64(node.bytes);
+      const byteLength = binaryByteLengths.get(node);
+      if (byteLength === undefined) {
+        throw new JSONPlusError("INVALID_BINARY", "ArrayBuffer byte length was not validated.");
+      }
+      allocated[id] = decodeBase64(node.bytes, byteLength);
     } catch (cause) {
       if (cause instanceof JSONPlusError) throw cause;
       throw new JSONPlusError("INVALID_BINARY", "ArrayBuffer bytes could not be decoded.", {
@@ -769,7 +858,7 @@ function allocateGraph(nodes: EncodedNode[]): unknown[] {
 
     try {
       if (node.type === "typed-array") {
-        const descriptor = TYPED_ARRAYS.find((item) => item.name === node.constructor);
+        const descriptor = TYPED_ARRAY_BY_NAME.get(node.constructor);
         if (descriptor === undefined) {
           throw new JSONPlusError("INVALID_NODE", "Typed-array constructor is unsupported.");
         }
@@ -892,8 +981,8 @@ export function decode(input: string, options?: JSONPlusOptions): unknown {
   }
 
   assertNoDuplicateObjectKeys(input);
-  const envelope = validateDocument(parsed, limits);
-  const allocated = allocateGraph(envelope.nodes);
-  populateGraph(envelope.nodes, allocated);
-  return resolveValue(envelope.root, allocated);
+  const document = validateDocument(parsed, limits);
+  const allocated = allocateGraph(document.nodes, document.binaryByteLengths);
+  populateGraph(document.nodes, allocated);
+  return resolveValue(document.root, allocated);
 }

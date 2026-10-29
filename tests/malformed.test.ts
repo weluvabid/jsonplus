@@ -83,10 +83,12 @@ describe("malformed input", () => {
   });
 
   it("rejects invalid binary payloads and invalid views", () => {
-    expectCode(
-      envelope({ $ref: 0 }, [{ type: "array-buffer", bytes: "%%%", properties: [] }]),
-      "INVALID_BINARY",
-    );
+    for (const bytes of ["%%%", "A===", "AA=A", "AB==", "AAB=", "AAAA===="]) {
+      expectCode(
+        envelope({ $ref: 0 }, [{ type: "array-buffer", bytes, properties: [] }]),
+        "INVALID_BINARY",
+      );
+    }
     expectCode(
       envelope({ $ref: 0 }, [
         {
