@@ -1,4 +1,5 @@
 import eslint from "@eslint/js";
+import globals from "globals";
 import prettier from "eslint-config-prettier";
 import tseslint from "typescript-eslint";
 
@@ -10,12 +11,13 @@ export default tseslint.config(
   ...tseslint.configs.recommended,
   prettier,
   {
-    files: ["benchmarks/**/*.mjs"],
+    files: ["benchmarks/**/*.mjs", "scripts/**/*.mjs"],
     languageOptions: {
       globals: {
         console: "readonly",
         performance: "readonly",
         process: "readonly",
+        ...globals.node,
       },
     },
   },

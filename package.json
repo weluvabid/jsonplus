@@ -5,7 +5,7 @@
   "description": "A versioned, graph-aware serialization format for JavaScript values.",
   "license": "MIT",
   "engines": {
-    "node": ">=22.0.0",
+    "node": ">=22.12.0",
     "npm": ">=10.0.0"
   },
   "files": [
@@ -34,7 +34,8 @@
     "typecheck": "tsc --noEmit",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "check": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run build",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run test:package",
+    "test:package": "node scripts/package-smoke.mjs",
     "test:hardening": "vitest run tests/adversarial.test.ts tests/malformed.test.ts",
     "benchmark": "npm run build && node benchmarks/serialization.mjs"
   },
@@ -44,6 +45,7 @@
     "eslint": "9.39.0",
     "eslint-config-prettier": "10.1.8",
     "fast-check": "4.3.0",
+    "globals": "17.14.0",
     "prettier": "3.6.2",
     "typescript": "5.9.3",
     "typescript-eslint": "8.46.0",
@@ -59,5 +61,8 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "allowScripts": {
+    "fsevents@2.3.3": true
   }
 }

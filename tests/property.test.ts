@@ -24,6 +24,11 @@ const valueArbitrary = fc.letrec((tie) => ({
   ),
 }))["value"]!;
 
+const graphArbitrary = fc.array(fc.array(fc.nat(), { maxLength: 5 }), {
+  minLength: 1,
+  maxLength: 8,
+});
+
 describe("property-based round trips", () => {
   it("round-trips generated acyclic values", () => {
     fc.assert(
@@ -39,6 +44,57 @@ describe("property-based round trips", () => {
         return true;
       }),
       { numRuns: 250, endOnFailure: true },
+    );
+  });
+
+  it("round-trips generated cyclic graphs with shared references across objects, Maps, and Sets", () => {
+    fc.assert(
+      fc.property(graphArbitrary, (adjacency) => {
+        const nodes = adjacency.map((_, id) => ({
+          id,
+          edges: [] as Array<Record<string, unknown>>,
+          map: new Map<unknown, unknown>(),
+          set: new Set<unknown>(),
+        }));
+
+        for (let sourceIndex = 0; sourceIndex < nodes.length; sourceIndex += 1) {
+          const source = nodes[sourceIndex]!;
+          source.edges = adjacency[sourceIndex]!.map(
+            (targetIndex) => nodes[targetIndex % nodes.length]!,
+          );
+          source.map.set(source, source);
+          source.set.add(source);
+          for (const target of source.edges) {
+            source.map.set(target, target);
+            source.set.add(target);
+          }
+        }
+
+        const restored = decode(encode({ nodes, entry: nodes[0] })) as {
+          nodes: typeof nodes;
+          entry: (typeof nodes)[number];
+        };
+
+        expect(restored.entry).toBe(restored.nodes[0]);
+        for (let sourceIndex = 0; sourceIndex < nodes.length; sourceIndex += 1) {
+          const restoredNode = restored.nodes[sourceIndex]!;
+          const expectedTargets = adjacency[sourceIndex]!.map(
+            (targetIndex) => restored.nodes[targetIndex % nodes.length]!,
+          );
+
+          expect(restoredNode.edges).toHaveLength(expectedTargets.length);
+          for (let edgeIndex = 0; edgeIndex < expectedTargets.length; edgeIndex += 1) {
+            expect(restoredNode.edges[edgeIndex]).toBe(expectedTargets[edgeIndex]);
+          }
+          expect(restoredNode.map.get(restoredNode)).toBe(restoredNode);
+          expect(restoredNode.set.has(restoredNode)).toBe(true);
+          for (const target of expectedTargets) {
+            expect(restoredNode.map.get(target)).toBe(target);
+            expect(restoredNode.set.has(target)).toBe(true);
+          }
+        }
+      }),
+      { numRuns: 300, endOnFailure: true },
     );
   });
 
