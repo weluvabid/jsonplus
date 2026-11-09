@@ -41,7 +41,7 @@ JSON+ has no runtime dependencies and works in Node.js and browsers. Node uses i
 
 ## Development
 
-Requires Node.js 22 or newer and npm 10 or newer.
+Requires Node.js 22.12.0 or newer and npm 10 or newer.
 
 ```sh
 npm ci
