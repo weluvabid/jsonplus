@@ -7,7 +7,7 @@ function statistics(samples) {
   const sorted = [...samples].sort((left, right) => left - right);
   return {
     median: sorted[Math.floor(sorted.length / 2)],
-    p95: sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)],
+    max: sorted[sorted.length - 1],
   };
 }
 
@@ -22,7 +22,7 @@ function measure(name, run, iterations = MEASURED_RUNS) {
   }
 
   const result = statistics(samples);
-  const summary = `${name}: median ${result.median.toFixed(2)} ms; p95 ${result.p95.toFixed(2)} ms`;
+  const summary = `${name}: median ${result.median.toFixed(2)} ms; max ${result.max.toFixed(2)} ms`;
   console.log(`${summary} over ${iterations} runs`);
 }
 

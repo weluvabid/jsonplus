@@ -2,6 +2,8 @@
 
 A versioned, graph-aware serialization format for JavaScript values that ordinary JSON cannot faithfully represent.
 
+[Try JSON+ in StackBlitz](https://stackblitz.com/edit/jsonplus?file=index.js)
+
 JSON+ preserves supported JavaScript values **and the object-identity relationships between them**. Cycles and shared references are first-class parts of the format, not special cases hidden in a replacer function.
 
 ## Example
